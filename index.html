@@ -19,15 +19,17 @@
   --text: #e4e6eb;
 }
 * { box-sizing: border-box; }
+html {
+  background:
+    radial-gradient(circle at 18% 12%, rgba(47, 143, 224, 0.10), transparent 42%),
+    radial-gradient(circle at 82% 88%, rgba(47, 143, 224, 0.07), transparent 45%),
+    var(--bg);
+}
 html, body {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
-  background:
-    radial-gradient(circle at 18% 12%, rgba(47, 143, 224, 0.10), transparent 42%),
-    radial-gradient(circle at 82% 88%, rgba(47, 143, 224, 0.07), transparent 45%),
-    var(--bg);
   color: var(--text);
   cursor: none;
   overflow: hidden;
@@ -45,7 +47,7 @@ html, body {
     "wind-dir wind-speed anchor"
     "wind-dir depth      bottomright";
 }
-.panel {
+.panel, .readout {
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
   border-radius: 16px;
@@ -58,11 +60,12 @@ html, body {
   backdrop-filter: blur(18px) saturate(150%);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 var(--panel-highlight);
-  transition: background 0.4s ease;
 }
 #panel-wind-dir   { grid-area: wind-dir; }
 #panel-wind-speed { grid-area: wind-speed; }
-#panel-anchor     { grid-area: anchor; padding: 0; }
+/* The opaque iframe covers the panel, so a backdrop blur there is invisible
+   and only costs a re-blur on every map repaint. */
+#panel-anchor     { grid-area: anchor; backdrop-filter: none; -webkit-backdrop-filter: none; }
 #panel-depth      { grid-area: depth; }
 #panel-bottomright {
   grid-area: bottomright;
@@ -95,20 +98,9 @@ html, body {
 }
 .readout {
   container-type: inline-size;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 16px;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   height: 100%;
-  position: relative;
-  min-width: 0;
-  overflow: hidden;
-  backdrop-filter: blur(18px) saturate(150%);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 var(--panel-highlight);
 }
 .readout .value {
   font-size: clamp(1.5rem, 20cqw, 4.5rem);
@@ -118,7 +110,6 @@ html, body {
   line-height: 1;
   white-space: nowrap;
   text-shadow: 0 0 24px rgba(47, 143, 224, 0.45);
-  transition: text-shadow 0.4s ease;
 }
 .readout .label {
   margin-top: 10px;
@@ -133,7 +124,6 @@ html, body {
   border: 0;
   display: block;
 }
-.u-legend { display: none; }
 </style>
 </head>
 <body>
@@ -176,31 +166,26 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
 
   var SIGNALK_HOST = '192.168.0.9:3000';
   var WS_URL = 'ws://' + SIGNALK_HOST + '/signalk/v1/stream';
-  var HISTORY_URL = 'http://' + SIGNALK_HOST +
-    '/signalk/v2/api/history/values?paths=environment.wind.directionMagnetic,environment.wind.speedTrue,environment.depth.belowSurface&duration=PT12H&resolution=30s';
 
+  var ACCENT = '#2f8fe0';
+  var ACCENT_FILL = 'rgba(47, 143, 224, 0.15)';
+
+  // Order matters: history rows are [time, ...values] in this order.
   var HISTORY_PATHS = [
     'environment.wind.directionMagnetic',
     'environment.wind.speedTrue',
     'environment.depth.belowSurface'
   ];
-
-  var SUBSCRIBE_MSG = {
-    context: 'vessels.self',
-    subscribe: [
-      { path: 'environment.wind.directionMagnetic', period: 1000 },
-      { path: 'environment.wind.speedTrue', period: 1000 },
-      { path: 'environment.depth.belowSurface', period: 1000 },
-      { path: 'electrical.batteries.278.capacity.stateOfCharge', period: 1000 },
-      { path: 'environment.water.temperature', period: 1000 }
-    ]
-  };
+  var HISTORY_URL = 'http://' + SIGNALK_HOST + '/signalk/v2/api/history/values?paths=' +
+    HISTORY_PATHS.join(',') + '&duration=PT12H&resolution=30s';
 
   var MAX_POINTS = 43200; // ~12h at 1 sample/sec, bounds memory/CPU for multi-day uptime
 
-  var windDir = { x: [], y: [] };
-  var windSpd = { x: [], y: [] };
-  var depth   = { x: [], y: [] };
+  // Plotted series. `chart` and `dirty` are set below; a chart is only
+  // re-fed when its series actually changed.
+  var windDir = { x: [], y: [], dirty: false };
+  var windSpd = { x: [], y: [], dirty: false };
+  var depth   = { x: [], y: [], dirty: false };
   var lastWindDirDeg = null;
 
   // At the full ~12h view, consecutive 30s samples land under 1 screen
@@ -217,24 +202,26 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   // elements for axis ranging, it doesn't scan). Since the history fetch
   // and the websocket connect concurrently, a live delta can otherwise land
   // before backfill finishes and corrupt that ordering. Buffer live deltas
-  // for the three plotted paths until history has been merged in.
-  var historyLoaded = false;
-  var pendingLive = []; // { path, ts, value }
-  var PLOTTED_PATHS = {
-    'environment.wind.directionMagnetic': true,
-    'environment.wind.speedTrue': true,
-    'environment.depth.belowSurface': true
-  };
+  // for the plotted paths until history has been merged in (null = done).
+  var pendingLive = []; // [path, tsMs, value]
 
   var batteryEl = document.getElementById('battery-value');
   var waterTempEl = document.getElementById('watertemp-value');
 
-  function pruneIfNeeded(series) {
+  function isStale(series, t) {
+    return series.x.length > 0 && t <= series.x[series.x.length - 1];
+  }
+
+  function push(series, t, y) {
+    series.x.push(t);
+    series.y.push(y);
     var over = series.x.length - MAX_POINTS;
     if (over > 0) {
       series.x.splice(0, over);
       series.y.splice(0, over);
     }
+    series.dirty = true;
+    scheduleRedraw();
   }
 
   function radToSignedDeg(rad) {
@@ -243,13 +230,11 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   }
 
   function onWindDir(tsMs, valueRad) {
-    if (valueRad === null || valueRad === undefined) return;
     var t = tsMs / 1000;
-    if (windDir.x.length && t <= windDir.x[windDir.x.length - 1]) return;
+    if (isStale(windDir, t)) return;
     var signed = radToSignedDeg(valueRad);
 
-    var isWrap = lastWindDirDeg !== null && Math.abs(signed - lastWindDirDeg) > 180;
-    if (isWrap) {
+    if (lastWindDirDeg !== null && Math.abs(signed - lastWindDirDeg) > 180) {
       // Retroactively blank out recently-pushed points within the pad
       // window so the gap has enough real-time width to survive pixel
       // rounding at a wide zoom, then extend the forward suppression too.
@@ -260,43 +245,26 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
       wrapSuppressUntil = t + WRAP_PAD_SEC;
     }
 
-    var suppressed = isWrap || (wrapSuppressUntil > 0 && t < wrapSuppressUntil);
-    windDir.x.push(t);
-    windDir.y.push(suppressed ? null : signed);
+    push(windDir, t, t < wrapSuppressUntil ? null : signed);
     lastWindDirDeg = signed; // track true direction even while visually suppressed
-    pruneIfNeeded(windDir);
-    scheduleRedraw();
   }
 
   function onWindSpeed(tsMs, mps) {
-    if (mps === null || mps === undefined) return;
     var t = tsMs / 1000;
-    if (windSpd.x.length && t <= windSpd.x[windSpd.x.length - 1]) return;
-    windSpd.x.push(t);
-    windSpd.y.push(mps * 1.943844);
-    pruneIfNeeded(windSpd);
-    scheduleRedraw();
+    if (!isStale(windSpd, t)) push(windSpd, t, mps * 1.943844);
   }
 
   function onDepth(tsMs, meters) {
-    if (meters === null || meters === undefined) return;
     var t = tsMs / 1000;
-    if (depth.x.length && t <= depth.x[depth.x.length - 1]) return;
-    depth.x.push(t);
-    depth.y.push(meters * 3.28084);
-    pruneIfNeeded(depth);
-    scheduleRedraw();
+    if (!isStale(depth, t)) push(depth, t, meters * 3.28084);
   }
 
   function onBattery(tsMs, ratio) {
-    if (ratio === null || ratio === undefined) return;
     batteryEl.textContent = Math.round(ratio * 100) + '%';
   }
 
   function onWaterTemp(tsMs, kelvin) {
-    if (kelvin === null || kelvin === undefined) return;
-    var f = (kelvin - 273.15) * 9 / 5 + 32;
-    waterTempEl.textContent = f.toFixed(1) + '°F';
+    waterTempEl.textContent = ((kelvin - 273.15) * 9 / 5 + 32).toFixed(1) + '°F';
   }
 
   var PATH_HANDLERS = {
@@ -309,13 +277,11 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
 
   // ---- Redraw batching ----
   var redrawScheduled = false;
-  var uWindDir, uWindSpd, uDepth;
 
   // Light display-only smoothing: a small moving average recomputed each
-  // redraw from the raw series, never written back. Null values (the
-  // wrap-suppression gaps in windDir) act as hard boundaries the window
-  // never expands across, so this can't blend a pre-wrap value with a
-  // post-wrap one. Raw arrays stay untouched for wrap detection/pruning.
+  // redraw and never written back. Null values (the wrap-suppression gaps
+  // in windDir) act as hard boundaries the window never expands across, so
+  // this can't blend a pre-wrap value with a post-wrap one.
   var SMOOTH_RADIUS = 2;
 
   function smoothForDisplay(ys, radius) {
@@ -342,9 +308,11 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     redrawScheduled = true;
     requestAnimationFrame(function () {
       redrawScheduled = false;
-      if (uWindDir) uWindDir.setData([windDir.x, smoothForDisplay(windDir.y, SMOOTH_RADIUS)]);
-      if (uWindSpd) uWindSpd.setData([windSpd.x, smoothForDisplay(windSpd.y, SMOOTH_RADIUS)]);
-      if (uDepth) uDepth.setData([depth.x, smoothForDisplay(depth.y, SMOOTH_RADIUS)]);
+      [windDir, windSpd, depth].forEach(function (s) {
+        if (!s.dirty) return;
+        s.dirty = false;
+        s.chart.setData([s.x, smoothForDisplay(s.y, SMOOTH_RADIUS)]);
+      });
     });
   }
 
@@ -357,18 +325,14 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   };
 
   // 24-hour time labels with no date component, for all time axes.
-  // uPlot's default time-axis config array: [minIncrSecs, defaultTpl,
-  // yearRollover, monthRollover, dayRollover, hourRollover, minRollover,
-  // secRollover, mode]. Rollover slots left null so the axis never
-  // switches to a date stamp at day/month/year boundaries.
+  // uPlot's time-axis config array: [minIncrSecs, defaultTpl, yearRollover,
+  // monthRollover, dayRollover, hourRollover, minRollover, secRollover,
+  // mode]. Rollover slots are null so the axis never switches to a date
+  // stamp at day/month/year boundaries.
   var TIME_AXIS_VALUES = [
-    [31536000, '{HH}:{mm}', null, null, null, null, null, null, 1],
-    [2419200,  '{HH}:{mm}', null, null, null, null, null, null, 1],
-    [86400,    '{HH}:{mm}', null, null, null, null, null, null, 1],
-    [3600,     '{HH}:{mm}', null, null, null, null, null, null, 1],
-    [60,       '{HH}:{mm}', null, null, null, null, null, null, 1],
-    [1,        '{HH}:{mm}:{ss}', null, null, null, null, null, null, 1],
-    [0.001,    '{HH}:{mm}:{ss}.{fff}', null, null, null, null, null, null, 1]
+    [3600, '{HH}:{mm}',       null, null, null, null, null, null, 1],
+    [60,   '{HH}:{mm}',       null, null, null, null, null, null, 1],
+    [1,    '{HH}:{mm}:{ss}',  null, null, null, null, null, null, 1]
   ];
 
   function makeAxis(overrides) {
@@ -379,27 +343,38 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     return axis;
   }
 
-  function createChart(containerId, opts, data) {
+  function unitAxis(unit) {
+    return makeAxis({
+      values: function (u, vals) { return vals.map(function (v) { return v.toFixed(0) + unit; }); }
+    });
+  }
+
+  function makeSeries(fill) {
+    var s = { stroke: ACCENT, width: 2.25, cap: 'round', pxAlign: 0, points: { show: false } };
+    if (fill) s.fill = fill;
+    return s;
+  }
+
+  function createChart(containerId, opts, series) {
     var el = document.getElementById(containerId);
     var rect = el.getBoundingClientRect();
     opts.width = Math.max(1, Math.floor(rect.width));
     opts.height = Math.max(1, Math.floor(rect.height));
-    var chart = new uPlot(opts, data, el);
-    var ro = new ResizeObserver(function (entries) {
+    opts.cursor = { show: false };
+    opts.legend = { show: false };
+    var chart = new uPlot(opts, [series.x, series.y], el);
+    new ResizeObserver(function (entries) {
       var cr = entries[0].contentRect;
       if (cr.width > 0 && cr.height > 0) {
         chart.setSize({ width: Math.floor(cr.width), height: Math.floor(cr.height) });
       }
-    });
-    ro.observe(el);
-    return chart;
+    }).observe(el);
+    series.chart = chart;
   }
 
-  uWindDir = createChart('chart-wind-dir', {
-    cursor: { show: false },
-    legend: { show: false },
+  createChart('chart-wind-dir', {
     scales: {
-      x: { time: true, ori: 1, dir: -1 },
+      x: { ori: 1, dir: -1 },
       y: { range: [-180, 180], dir: -1 }
     },
     axes: [
@@ -410,44 +385,19 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
         splits: function () { return [-180, -90, 0, 90, 180]; }
       })
     ],
-    series: [
-      {},
-      {
-        label: 'Wind Dir',
-        stroke: '#2f8fe0',
-        width: 2.25,
-        cap: 'round',
-        pxAlign: 0,
-        points: { show: false },
-        spanGaps: false
-      }
-    ]
-  }, [windDir.x, windDir.y]);
+    series: [{}, makeSeries()]
+  }, windDir);
 
-  uWindSpd = createChart('chart-wind-speed', {
-    cursor: { show: false },
-    legend: { show: false },
-    scales: {
-      x: { time: true },
-      y: { auto: true }
-    },
+  createChart('chart-wind-speed', {
     axes: [
       makeAxis({ space: 50, values: TIME_AXIS_VALUES }),
-      makeAxis({
-        values: function (u, vals) { return vals.map(function (v) { return v.toFixed(0) + ' kt'; }); }
-      })
+      unitAxis(' kt')
     ],
-    series: [
-      {},
-      { label: 'Wind Speed', stroke: '#2f8fe0', width: 2.25, cap: 'round', pxAlign: 0, fill: 'rgba(47, 143, 224, 0.15)', points: { show: false } }
-    ]
-  }, [windSpd.x, windSpd.y]);
+    series: [{}, makeSeries(ACCENT_FILL)]
+  }, windSpd);
 
-  uDepth = createChart('chart-depth', {
-    cursor: { show: false },
-    legend: { show: false },
+  createChart('chart-depth', {
     scales: {
-      x: { time: true },
       y: {
         dir: -1,
         range: function (u, dataMin, dataMax) {
@@ -461,90 +411,84 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     },
     axes: [
       makeAxis({ space: 50, values: TIME_AXIS_VALUES }),
-      makeAxis({
-        values: function (u, vals) { return vals.map(function (v) { return v.toFixed(0) + ' ft'; }); }
-      })
+      unitAxis(' ft')
     ],
-    series: [
-      {},
-      { label: 'Depth', stroke: '#2f8fe0', width: 2.25, cap: 'round', pxAlign: 0, fill: 'rgba(47, 143, 224, 0.15)', points: { show: false } }
-    ]
-  }, [depth.x, depth.y]);
+    series: [{}, makeSeries(ACCENT_FILL)]
+  }, depth);
 
-  // ---- History backfill ----
+  // ---- Data intake ----
   function flushPendingLive() {
-    pendingLive.forEach(function (p) { PATH_HANDLERS[p.path](p.ts, p.value); });
-    pendingLive = [];
-    historyLoaded = true;
+    var queued = pendingLive;
+    pendingLive = null;
+    queued.forEach(function (p) { PATH_HANDLERS[p[0]](p[1], p[2]); });
   }
 
   function loadHistory() {
     return fetch(HISTORY_URL)
       .then(function (res) { return res.json(); })
       .then(function (json) {
-        if (json && json.data) {
-          json.data.forEach(function (row) {
-            var tMs = Date.parse(row[0]);
-            if (isNaN(tMs)) return;
-            HISTORY_PATHS.forEach(function (path, i) {
-              var val = row[i + 1];
-              if (val === null || val === undefined) return;
-              PATH_HANDLERS[path](tMs, val);
-            });
+        (json.data || []).forEach(function (row) {
+          var tMs = Date.parse(row[0]);
+          if (isNaN(tMs)) return;
+          HISTORY_PATHS.forEach(function (path, i) {
+            var val = row[i + 1];
+            if (val != null) PATH_HANDLERS[path](tMs, val);
           });
-        }
-        flushPendingLive();
-        scheduleRedraw();
+        });
       });
   }
 
+  function applyValue(path, tsMs, value) {
+    var handler = PATH_HANDLERS[path];
+    if (!handler || value == null) return;
+    if (pendingLive && HISTORY_PATHS.indexOf(path) >= 0) {
+      pendingLive.push([path, tsMs, value]);
+    } else {
+      handler(tsMs, value);
+    }
+  }
+
   // ---- WebSocket client ----
-  var ws = null;
-  var reconnectTimer = null;
   var backoffMs = 1000;
   var BACKOFF_MAX = 15000;
 
   function handleMessage(ev) {
     var msg;
     try { msg = JSON.parse(ev.data); } catch (e) { return; }
-    if (!msg || !msg.updates) return;
-    for (var i = 0; i < msg.updates.length; i++) {
-      var upd = msg.updates[i];
-      var ts = upd.timestamp ? Date.parse(upd.timestamp) : Date.now();
-      if (isNaN(ts)) ts = Date.now();
-      var values = upd.values || [];
-      for (var j = 0; j < values.length; j++) {
-        var v = values[j];
-        if (!v || !PATH_HANDLERS[v.path]) continue;
-        if (!historyLoaded && PLOTTED_PATHS[v.path]) {
-          pendingLive.push({ path: v.path, ts: ts, value: v.value });
-        } else {
-          PATH_HANDLERS[v.path](ts, v.value);
-        }
-      }
-    }
+    var updates = (msg && msg.updates) || [];
+    updates.forEach(function (upd) {
+      var ts = Date.parse(upd.timestamp) || Date.now();
+      (upd.values || []).forEach(function (v) {
+        if (v) applyValue(v.path, ts, v.value);
+      });
+    });
   }
 
   function connect() {
-    ws = new WebSocket(WS_URL);
+    var ws = new WebSocket(WS_URL);
     ws.onopen = function () {
       backoffMs = 1000;
-      ws.send(JSON.stringify(SUBSCRIBE_MSG));
+      ws.send(JSON.stringify({
+        context: 'vessels.self',
+        subscribe: Object.keys(PATH_HANDLERS).map(function (path) {
+          return { path: path, period: 1000 };
+        })
+      }));
     };
     ws.onmessage = handleMessage;
+    // onerror is always followed by onclose, so reconnect only from here.
     ws.onclose = function () {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(connect, backoffMs);
+      setTimeout(connect, backoffMs);
       backoffMs = Math.min(backoffMs * 2, BACKOFF_MAX);
     };
-    ws.onerror = function () { /* onclose fires next; reconnect handled there */ };
   }
 
   // ---- Boot ----
-  loadHistory().catch(function (err) {
-    console.error('history backfill failed', err);
-    flushPendingLive();
-  });
+  // A failed history fetch is non-fatal: live data still flows once the
+  // buffer is released.
+  loadHistory()
+    .catch(function (err) { console.error('history backfill failed', err); })
+    .then(flushPendingLive);
   connect();
 })();
 </script>
