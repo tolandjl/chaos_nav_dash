@@ -111,6 +111,10 @@ html, body {
   white-space: nowrap;
   text-shadow: 0 0 24px rgba(47, 143, 224, 0.45);
 }
+#battery-value {
+  color: #fff;
+  text-shadow: 0 0 24px rgba(255, 255, 255, 0.35);
+}
 .readout .label {
   margin-top: 10px;
   color: var(--text-dim);
@@ -169,6 +173,8 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
 
   var ACCENT = '#2f8fe0';
   var ACCENT_FILL = 'rgba(47, 143, 224, 0.15)';
+  var WIND_COLOR = '#ffffff';
+  var WIND_FILL = 'rgba(255, 255, 255, 0.12)';
 
   // Order matters: history rows are [time, ...values] in this order.
   var HISTORY_PATHS = [
@@ -183,19 +189,9 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
 
   // Plotted series. `chart` and `dirty` are set below; a chart is only
   // re-fed when its series actually changed.
-  var windDir = { x: [], y: [], dirty: false };
+  var windDir = { x: [], y: [], dirty: false, circular: true };
   var windSpd = { x: [], y: [], dirty: false };
   var depth   = { x: [], y: [], dirty: false };
-  var lastWindDirDeg = null;
-
-  // At the full ~12h view, consecutive 30s samples land under 1 screen
-  // pixel apart, so a single null point between them can't produce a
-  // visible break (uPlot's gap-clip has ~0 width to work with and the
-  // stroke bridges right over it). To make a wrap actually read as a gap,
-  // blank out a wider window of real time (WRAP_PAD_SEC on each side)
-  // around the transition instead of just the single instant.
-  var WRAP_PAD_SEC = 120;
-  var wrapSuppressUntil = 0;
 
   // History backfill and live deltas write into the same arrays above, and
   // uPlot assumes x is strictly ascending (it reads only the first/last
@@ -231,22 +227,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
 
   function onWindDir(tsMs, valueRad) {
     var t = tsMs / 1000;
-    if (isStale(windDir, t)) return;
-    var signed = radToSignedDeg(valueRad);
-
-    if (lastWindDirDeg !== null && Math.abs(signed - lastWindDirDeg) > 180) {
-      // Retroactively blank out recently-pushed points within the pad
-      // window so the gap has enough real-time width to survive pixel
-      // rounding at a wide zoom, then extend the forward suppression too.
-      var cutoff = t - WRAP_PAD_SEC;
-      for (var i = windDir.y.length - 1; i >= 0 && windDir.x[i] >= cutoff; i--) {
-        windDir.y[i] = null;
-      }
-      wrapSuppressUntil = t + WRAP_PAD_SEC;
-    }
-
-    push(windDir, t, t < wrapSuppressUntil ? null : signed);
-    lastWindDirDeg = signed; // track true direction even while visually suppressed
+    if (!isStale(windDir, t)) push(windDir, t, radToSignedDeg(valueRad));
   }
 
   function onWindSpeed(tsMs, mps) {
@@ -279,26 +260,28 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   var redrawScheduled = false;
 
   // Light display-only smoothing: a small moving average recomputed each
-  // redraw and never written back. Null values (the wrap-suppression gaps
-  // in windDir) act as hard boundaries the window never expands across, so
-  // this can't blend a pre-wrap value with a post-wrap one.
+  // redraw and never written back. Each neighbour is averaged as an offset
+  // from the centre value; for circular data (wind direction) that offset
+  // is taken the short way round, so values either side of the +/-180 seam
+  // average to something near 180 instead of near 0.
   var SMOOTH_RADIUS = 2;
 
-  function smoothForDisplay(ys, radius) {
+  function smoothForDisplay(ys, radius, circular) {
     var n = ys.length;
     var out = new Array(n);
     for (var i = 0; i < n; i++) {
-      if (ys[i] == null) { out[i] = null; continue; }
-      var sum = ys[i], count = 1;
-      for (var k = 1; k <= radius; k++) {
-        var li = i - k;
-        if (li >= 0 && ys[li] != null) { sum += ys[li]; count++; } else break;
+      var c = ys[i];
+      var sum = 0, count = 1;
+      for (var k = -radius; k <= radius; k++) {
+        var j = i + k;
+        if (k === 0 || j < 0 || j >= n) continue;
+        var d = ys[j] - c;
+        if (circular) d = ((d + 540) % 360) - 180;
+        sum += d;
+        count++;
       }
-      for (var k2 = 1; k2 <= radius; k2++) {
-        var ri = i + k2;
-        if (ri < n && ys[ri] != null) { sum += ys[ri]; count++; } else break;
-      }
-      out[i] = sum / count;
+      var r = c + sum / count;
+      out[i] = circular ? ((r + 540) % 360) - 180 : r;
     }
     return out;
   }
@@ -311,7 +294,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
       [windDir, windSpd, depth].forEach(function (s) {
         if (!s.dirty) return;
         s.dirty = false;
-        s.chart.setData([s.x, smoothForDisplay(s.y, SMOOTH_RADIUS)]);
+        s.chart.setData([s.x, smoothForDisplay(s.y, SMOOTH_RADIUS, s.circular)]);
       });
     });
   }
@@ -335,6 +318,45 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     [1,    '{HH}:{mm}:{ss}',  null, null, null, null, null, null, 1]
   ];
 
+  // Wind-direction axis labels: the fixed ticks are -180/-90/0/90/180.
+  var COMPASS = { '-180': 'S', '-90': 'W', '0': 'N', '90': 'E', '180': 'S' };
+
+  // Path builder for the wind-direction line. Direction is circular, so when
+  // consecutive points differ by more than 180 degrees the line left the plot
+  // through one edge (S) and comes back in through the other: draw it to the
+  // edge, jump to the opposite edge at the same time, and carry on. Written
+  // with uPlot.orient so it works with the vertical time axis.
+  function wrapPaths(u, seriesIdx, idx0, idx1) {
+    return uPlot.orient(u, seriesIdx, function (series, dataX, dataY, scaleX, scaleY,
+        valToPosX, valToPosY, xOff, yOff, xDim, yDim, moveTo, lineTo) {
+      var stroke = new Path2D();
+      var prevV = null, prevX = 0;
+      var edge = function (deg) { return valToPosY(deg, scaleY, yDim, yOff); };
+      for (var i = idx0; i <= idx1; i++) {
+        var v = dataY[i];
+        if (v == null) { prevV = null; continue; }
+        var px = valToPosX(dataX[i], scaleX, xDim, xOff);
+        var py = valToPosY(v, scaleY, yDim, yOff);
+        if (prevV === null) {
+          moveTo(stroke, px, py);
+        } else if (Math.abs(v - prevV) > 180) {
+          var out = prevV > 0 ? 180 : -180;
+          var toEdge = 180 - Math.abs(prevV), fromEdge = 180 - Math.abs(v);
+          var total = toEdge + fromEdge;
+          var ex = total > 0 ? prevX + (px - prevX) * toEdge / total : px;
+          lineTo(stroke, ex, edge(out));
+          moveTo(stroke, ex, edge(-out));
+          lineTo(stroke, px, py);
+        } else {
+          lineTo(stroke, px, py);
+        }
+        prevV = v;
+        prevX = px;
+      }
+      return { stroke: stroke, fill: null, clip: null, band: null, gaps: null, flags: 0 };
+    });
+  }
+
   function makeAxis(overrides) {
     var axis = {};
     var k;
@@ -349,9 +371,10 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     });
   }
 
-  function makeSeries(fill) {
-    var s = { stroke: ACCENT, width: 2.25, cap: 'round', pxAlign: 0, points: { show: false } };
+  function makeSeries(fill, stroke, paths) {
+    var s = { stroke: stroke || ACCENT, width: 2.25, cap: 'round', pxAlign: 0, points: { show: false } };
     if (fill) s.fill = fill;
+    if (paths) s.paths = paths;
     return s;
   }
 
@@ -373,19 +396,22 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   }
 
   createChart('chart-wind-dir', {
+    padding: [30, null, null, null],   // keep the newest time label clear of the panel chip
     scales: {
-      x: { ori: 1, dir: -1 },
-      y: { range: [-180, 180], dir: -1 }
+      x: { ori: 1 },
+      y: { range: [-180, 180], ori: 0 }   // both scales need an orientation, or axis and line disagree
     },
     axes: [
       makeAxis({ side: 3, space: 40, values: TIME_AXIS_VALUES }),
       makeAxis({
         side: 2,
-        values: function (u, vals) { return vals.map(function (v) { return v + '°'; }); },
+        values: function (u, vals) {
+          return vals.map(function (v) { return COMPASS[v]; });
+        },
         splits: function () { return [-180, -90, 0, 90, 180]; }
       })
     ],
-    series: [{}, makeSeries()]
+    series: [{}, makeSeries(null, WIND_COLOR, wrapPaths)]
   }, windDir);
 
   createChart('chart-wind-speed', {
@@ -393,7 +419,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
       makeAxis({ space: 50, values: TIME_AXIS_VALUES }),
       unitAxis(' kt')
     ],
-    series: [{}, makeSeries(ACCENT_FILL)]
+    series: [{}, makeSeries(WIND_FILL, WIND_COLOR)]
   }, windSpd);
 
   createChart('chart-depth', {
