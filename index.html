@@ -232,13 +232,12 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   var windSpd = { x: [], y: [], dirty: false };
   var depth   = { x: [], y: [], dirty: false };
 
-  // History backfill and live deltas write into the same arrays above, and
   // uPlot assumes x is strictly ascending (it reads only the first/last
-  // elements for axis ranging, it doesn't scan). Since the history fetch
-  // and the websocket connect concurrently, a live delta can otherwise land
-  // before backfill finishes and corrupt that ordering. Buffer live deltas
-  // for the plotted paths until history has been merged in (null = done).
-  var pendingLive = []; // [path, tsMs, value]
+  // elements for axis ranging, it doesn't scan). Live deltas are appended as
+  // they arrive; history is fetched separately, retried until it works, and
+  // PREPENDED (only points older than what is already plotted), so x stays
+  // ascending however late the history lands.
+  var HISTORY_WINDOW_SEC = 12 * 3600;
 
   var batteryEl = document.getElementById('battery-value');
   var waterTempEl = document.getElementById('watertemp-value');
@@ -247,14 +246,18 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     return series.x.length > 0 && t <= series.x[series.x.length - 1];
   }
 
-  function push(series, t, y) {
-    series.x.push(t);
-    series.y.push(y);
+  function prune(series) {
     var over = series.x.length - MAX_POINTS;
     if (over > 0) {
       series.x.splice(0, over);
       series.y.splice(0, over);
     }
+  }
+
+  function push(series, t, y) {
+    series.x.push(t);
+    series.y.push(y);
+    prune(series);
     series.dirty = true;
     scheduleRedraw();
   }
@@ -269,14 +272,17 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     if (!isStale(windDir, t)) push(windDir, t, radToSignedDeg(valueRad));
   }
 
+  function toKnots(mps) { return mps * 1.943844; }
+  function toFeet(meters) { return meters * 3.28084; }
+
   function onWindSpeed(tsMs, mps) {
     var t = tsMs / 1000;
-    if (!isStale(windSpd, t)) push(windSpd, t, mps * 1.943844);
+    if (!isStale(windSpd, t)) push(windSpd, t, toKnots(mps));
   }
 
   function onDepth(tsMs, meters) {
     var t = tsMs / 1000;
-    if (!isStale(depth, t)) push(depth, t, meters * 3.28084);
+    if (!isStale(depth, t)) push(depth, t, toFeet(meters));
   }
 
   function onBattery(tsMs, ratio) {
@@ -286,6 +292,9 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   function onWaterTemp(tsMs, kelvin) {
     waterTempEl.textContent = ((kelvin - 273.15) * 9 / 5 + 32).toFixed(1) + '°F';
   }
+
+  // Same order as HISTORY_PATHS: [series, raw value -> plotted value].
+  var HISTORY_SERIES = [[windDir, radToSignedDeg], [windSpd, toKnots], [depth, toFeet]];
 
   var PATH_HANDLERS = {
     'environment.wind.directionMagnetic': onWindDir,
@@ -396,6 +405,14 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     });
   }
 
+  // Time scale: always 12 h ending at the newest reading, so a plot that is
+  // missing history shows an empty older region instead of silently
+  // stretching a shorter span to fill the axis.
+  function last12h(u, dataMin, dataMax) {
+    var end = dataMax != null ? dataMax : Date.now() / 1000;
+    return [end - HISTORY_WINDOW_SEC, end];
+  }
+
   function makeAxis(overrides) {
     var axis = {};
     var k;
@@ -437,7 +454,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   createChart('chart-wind-dir', {
     padding: [30, null, null, null],   // keep the newest time label clear of the panel chip
     scales: {
-      x: { ori: 1 },
+      x: { ori: 1, range: last12h },
       y: { range: [-180, 180], ori: 0 }   // both scales need an orientation, or axis and line disagree
     },
     axes: [
@@ -454,6 +471,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   }, windDir);
 
   createChart('chart-wind-speed', {
+    scales: { x: { range: last12h } },
     axes: [
       makeAxis({ space: 50, values: TIME_AXIS_VALUES }),
       unitAxis(' kt')
@@ -463,6 +481,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
 
   createChart('chart-depth', {
     scales: {
+      x: { range: last12h },
       y: {
         dir: -1,
         range: function (u, dataMin, dataMax) {
@@ -482,35 +501,54 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   }, depth);
 
   // ---- Data intake ----
-  function flushPendingLive() {
-    var queued = pendingLive;
-    pendingLive = null;
-    queued.forEach(function (p) { PATH_HANDLERS[p[0]](p[1], p[2]); });
+  // Prepend history rows (ascending [iso time, ...values]) that are older than
+  // what each series already holds. Returns how many points were added.
+  function mergeHistory(rows) {
+    var added = 0;
+    HISTORY_SERIES.forEach(function (hs, i) {
+      var series = hs[0], convert = hs[1];
+      var before = series.x.length ? series.x[0] : Infinity;
+      var hx = [], hy = [];
+      rows.forEach(function (row) {
+        var t = Date.parse(row[0]) / 1000, v = row[i + 1];
+        if (v == null || isNaN(t) || t >= before) return;
+        hx.push(t);
+        hy.push(convert(v));
+      });
+      if (!hx.length) return;
+      series.x = hx.concat(series.x);
+      series.y = hy.concat(series.y);
+      prune(series);
+      series.dirty = true;
+      added += hx.length;
+    });
+    scheduleRedraw();
+    return added;
   }
 
-  function loadHistory() {
-    return fetch(HISTORY_URL)
-      .then(function (res) { return res.json(); })
+  // The Pi may still be booting when this page starts, so keep trying (with
+  // backoff) until the history actually arrives.
+  function backfillHistory(delayMs) {
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, 20000);
+    fetch(HISTORY_URL, { signal: ctl.signal })
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
       .then(function (json) {
-        (json.data || []).forEach(function (row) {
-          var tMs = Date.parse(row[0]);
-          if (isNaN(tMs)) return;
-          HISTORY_PATHS.forEach(function (path, i) {
-            var val = row[i + 1];
-            if (val != null) PATH_HANDLERS[path](tMs, val);
-          });
-        });
-      });
+        if (!mergeHistory(json.data || [])) throw new Error('no usable history rows');
+      })
+      .catch(function (err) {
+        console.error('history backfill failed, retrying in ' + delayMs / 1000 + 's', err);
+        setTimeout(function () { backfillHistory(Math.min(delayMs * 2, 300000)); }, delayMs);
+      })
+      .then(function () { clearTimeout(timer); });
   }
 
   function applyValue(path, tsMs, value) {
     var handler = PATH_HANDLERS[path];
-    if (!handler || value == null) return;
-    if (pendingLive && HISTORY_PATHS.indexOf(path) >= 0) {
-      pendingLive.push([path, tsMs, value]);
-    } else {
-      handler(tsMs, value);
-    }
+    if (handler && value != null) handler(tsMs, value);
   }
 
   // ---- WebSocket client ----
@@ -557,11 +595,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   });
 
   // ---- Boot ----
-  // A failed history fetch is non-fatal: live data still flows once the
-  // buffer is released.
-  loadHistory()
-    .catch(function (err) { console.error('history backfill failed', err); })
-    .then(flushPendingLive);
+  backfillHistory(5000);
   connect();
 })();
 </script>
