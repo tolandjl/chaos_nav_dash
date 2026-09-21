@@ -208,7 +208,9 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   'use strict';
 
   var SIGNALK_HOST = '192.168.0.9:3000';
-  var WS_URL = 'ws://' + SIGNALK_HOST + '/signalk/v1/stream';
+  // subscribe=none: the default stream subscribes to the whole vessel (hundreds
+  // of paths), so start empty and ask only for the paths below.
+  var WS_URL = 'ws://' + SIGNALK_HOST + '/signalk/v1/stream?subscribe=none';
 
   var ACCENT = '#2f8fe0';
   var ACCENT_FILL = 'rgba(47, 143, 224, 0.15)';
@@ -574,7 +576,9 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
       ws.send(JSON.stringify({
         context: 'vessels.self',
         subscribe: Object.keys(PATH_HANDLERS).map(function (path) {
-          return { path: path, period: 1000 };
+          // `period` is only honoured with policy 'fixed'; otherwise the server
+          // sends every update (~10/s for wind), which overruns MAX_POINTS.
+          return { path: path, period: 1000, policy: 'fixed' };
         })
       }));
     };
