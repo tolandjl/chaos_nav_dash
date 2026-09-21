@@ -67,14 +67,16 @@ function Update-Repo {
   if (-not (Sync-Repo)) { return }
   Write-Log "updated $before -> $after"
   $changed = git -C $PSScriptRoot diff --name-only $before $after
+  # Restart Edge before any hand-over: the hand-over never returns, and the
+  # new copy would see HEAD == origin/main and not know the page changed.
+  if ($changed -contains 'index.html') {
+    Write-Log 'index.html changed, restarting kiosk Edge'
+    Get-KioskEdge | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  }
   if ($changed -contains 'kiosk.ps1') {
     Write-Log 'kiosk.ps1 changed, handing over to the new copy'
     & $PSCommandPath   # runs the new script (its own loop); never returns
     exit
-  }
-  if ($changed -contains 'index.html') {
-    Write-Log 'index.html changed, restarting kiosk Edge'
-    Get-KioskEdge | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   }
 }
 
