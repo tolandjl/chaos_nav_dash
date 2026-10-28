@@ -185,11 +185,71 @@ body.blackout #blackout { display: block; }
   inset: -10px;
 }
 body.blackout #blackout-toggle { opacity: 0.25; }
+/* Page tabs (in the top bar). The nav page is the default; the rally page
+   takes over the two rows under the top bar when selected. */
+.tabs { display: flex; gap: 6px; }
+.tab {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: none;
+}
+.tab.active { background: rgba(47, 143, 224, 0.22); border-color: rgba(47, 143, 224, 0.5); color: var(--text); }
+#page-rally {
+  grid-column: 1 / -1;
+  grid-row: 2 / 4;
+  display: none;
+  padding: 14px 18px;
+  gap: 10px;
+}
+body.page-rally .nav-page { display: none; }
+body.page-rally #page-rally { display: flex; }
+.rally-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 28px; }
+.rally-status { margin-left: auto; color: var(--text-dim); font-size: 13px; }
+.rally-table-wrap { flex: 1; min-height: 0; overflow: auto; }
+.rally-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+.rally-table th {
+  position: sticky;
+  top: 0;
+  background: rgba(22, 24, 28, 0.95);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: right;
+  padding: 6px 10px;
+}
+.rally-table td { text-align: right; padding: 5px 10px; border-top: 1px solid rgba(255, 255, 255, 0.05); white-space: nowrap; }
+.rally-table th:first-child, .rally-table td:first-child { text-align: left; }
+.rally-table th:nth-child(2), .rally-table td:nth-child(2) { text-align: left; }
+.rally-table .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+.rally-table tr.chaos td { color: var(--accent); font-weight: 700; background: rgba(47, 143, 224, 0.10); }
+.rally-table .dim { color: var(--text-dim); font-size: 14px; }
+.rally-table .good { color: #4cd07d; }
+.rally-table .bad { color: #ff6b6b; }
+.rally-note { color: var(--text-dim); font-size: 12px; }
 </style>
 </head>
 <body>
 <div class="grid">
   <div class="panel" id="topbar">
+    <div class="tabs">
+      <button class="tab active" type="button" data-page="nav">Nav</button>
+      <button class="tab" type="button" data-page="rally">Rally</button>
+    </div>
     <div class="tb-item"><span class="tb-label">Local</span><span class="tb-value" id="tb-local">&mdash;</span></div>
     <div class="tb-item"><span class="tb-label">UTC</span><span class="tb-value" id="tb-utc">&mdash;</span></div>
     <div class="tb-item"><span class="tb-label">Zone</span><span class="tb-value" id="tb-zone">&mdash;</span></div>
@@ -199,22 +259,22 @@ body.blackout #blackout-toggle { opacity: 0.25; }
     <div class="tb-item"><span class="tb-label">Last Tide</span><span class="tb-value" id="tb-prev-tide">&mdash;</span></div>
     <div class="tb-item"><span class="tb-label">Next Tide</span><span class="tb-value" id="tb-next-tide">&mdash;</span></div>
   </div>
-  <div class="panel" id="panel-wind-dir">
+  <div class="panel nav-page" id="panel-wind-dir">
     <span class="panel-label">True Wind Direction</span>
     <div class="chart-wrap" id="chart-wind-dir"></div>
   </div>
-  <div class="panel" id="panel-wind-speed">
+  <div class="panel nav-page" id="panel-wind-speed">
     <span class="panel-label">True Wind Speed</span>
     <div class="chart-wrap" id="chart-wind-speed"></div>
   </div>
-  <div class="panel" id="panel-anchor">
+  <div class="panel nav-page" id="panel-anchor">
     <iframe src="http://192.168.0.9:3000/hoekens-anchor-alarm/?embedded=true&showAnchorControls=false&mode=night" title="Anchor Alarm"></iframe>
   </div>
-  <div class="panel" id="panel-depth">
+  <div class="panel nav-page" id="panel-depth">
     <span class="panel-label">Depth</span>
     <div class="chart-wrap" id="chart-depth"></div>
   </div>
-  <div id="panel-bottomright">
+  <div class="nav-page" id="panel-bottomright">
     <div class="readout">
       <div class="value" id="battery-value">&mdash;</div>
       <div class="label">Battery</div>
@@ -223,6 +283,26 @@ body.blackout #blackout-toggle { opacity: 0.25; }
       <div class="value" id="watertemp-value">&mdash;</div>
       <div class="label">Water Temp</div>
     </div>
+  </div>
+  <div class="panel" id="page-rally">
+    <div class="rally-head">
+      <div class="tb-item"><span class="tb-label">Finish</span><span class="tb-value" id="rally-finish">&mdash;</span></div>
+      <div class="tb-item"><span class="tb-label">Chaos DTF now</span><span class="tb-value" id="rally-chaos-now">&mdash;</span></div>
+      <div class="tb-item"><span class="tb-label">Fleet fix</span><span class="tb-value" id="rally-fleet-fix">&mdash;</span></div>
+      <span class="rally-status" id="rally-status">Loading&hellip;</span>
+    </div>
+    <div class="rally-table-wrap">
+      <table class="rally-table">
+        <thead>
+          <tr>
+            <th>Boat</th><th>Fix (UTC)</th><th>DTF</th><th>Chaos lead</th><th>24h run</th>
+            <th>6h DTF gain</th><th>6h vs Chaos</th><th>24h DTF gain</th><th>24h vs Chaos</th>
+          </tr>
+        </thead>
+        <tbody id="rally-rows"></tbody>
+      </table>
+    </div>
+    <div class="rally-note" id="rally-note"></div>
   </div>
 </div>
 <div id="blackout"></div>
@@ -342,6 +422,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     el('tb-pos').textContent = formatLatLon(pos.latitude, 'N', 'S') + ' ' +
       formatLatLon(pos.longitude, 'E', 'W');
     if (first) { updateSun(); fetchTides(); }
+    updateRallyLive();
   }
 
   // 8°14.892'S style: degrees and decimal minutes.
@@ -745,6 +826,268 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     };
   }
 
+  // ---- Rally page: Oyster World Rally fleet vs Chaos ----
+  // Everyone is scored against the same finish point. The YB tracker only
+  // publishes fleet fixes every few hours, so each Oyster is compared with
+  // where Chaos was at the time of THAT boat's fix (from SignalK history),
+  // not with where Chaos is now.
+  var RALLY_FINISH = { lat: -(20 + 50.4318 / 60), lon: 55 + 25.9508 / 60 };
+  var YB_URL = 'https://cf.yb.tl/';
+  var YB_RACE = 'owr2026';
+  var RALLY_REFRESH_MS = 5 * 60 * 1000;
+  // 48 h of Chaos track covers the 24 h look-back from a fleet fix up to 24 h old.
+  var CHAOS_TRACK_URL = 'http://' + SIGNALK_HOST + '/signalk/v2/api/history/values' +
+    '?paths=navigation.position&duration=PT48H&resolution=300';
+  var CHAOS_MAX_GAP_SEC = 30 * 60;     // Chaos history is every 5 min
+  var FLEET_MAX_GAP_SEC = 9 * 3600;    // YB fixes are every 4 h; tolerate one missed fix
+  var FLEET_MAX_AGE_SEC = 24 * 3600;   // older fixes can't be compared with the Chaos track
+  var EARTH_NM = 3440.065;
+
+  function distNm(a, b) {
+    var rad = Math.PI / 180;
+    var dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return 2 * EARTH_NM * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  function dtf(p) { return p ? distNm(p, RALLY_FINISH) : null; }
+
+  // Position at time t (s) on a time-ascending track [{ t, lat, lon }],
+  // interpolated between the fixes either side. Null outside the track or
+  // across a gap longer than maxGap.
+  function trackAt(track, t, maxGap) {
+    var lo = 0, hi = track.length - 1;
+    if (hi < 0 || t < track[0].t || t > track[hi].t) return null;
+    while (hi - lo > 1) {
+      var mid = (lo + hi) >> 1;
+      if (track[mid].t <= t) lo = mid; else hi = mid;
+    }
+    var a = track[lo], b = track[hi];
+    if (b.t === a.t) return a;
+    if (b.t - a.t > maxGap) return null;
+    var f = (t - a.t) / (b.t - a.t);
+    return { t: t, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f };
+  }
+
+  // Distance sailed along the track between t0 and t1, or null if the track
+  // doesn't cover the whole span.
+  function trackRun(track, t0, t1, maxGap) {
+    var prev = trackAt(track, t0, maxGap);
+    var end = trackAt(track, t1, maxGap);
+    if (!prev || !end) return null;
+    var run = 0;
+    for (var i = 0; i < track.length; i++) {
+      var p = track[i];
+      if (p.t <= t0) continue;
+      if (p.t >= t1) break;
+      run += distNm(prev, p);
+      prev = p;
+    }
+    return run + distNm(prev, end);
+  }
+
+  // YB's AllPositions3 binary: a flags byte, a uint32 base time, then per team
+  // a uint16 id, a uint16 point count and the points newest first. A point is
+  // either absolute (uint32 time offset, int32 lat, int32 lon, in 1e-5 deg) or,
+  // when its top bit is set, a delta from the previous point (uint16 seconds
+  // earlier, int16 dlat, int16 dlon). The flags add optional per-point fields
+  // (altitude, DTF, lap, percent) that are skipped. Returns
+  // { teamId: time-ascending [{ t, lat, lon }] }.
+  function decodeYbPositions(buf) {
+    var dv = new DataView(buf);
+    var flags = dv.getUint8(0);
+    var hasAlt = flags & 1, hasDtf = flags & 2, hasLap = flags & 4, hasPc = flags & 8;
+    var base = dv.getUint32(1);
+    var p = 5, teams = {};
+    while (p + 4 <= dv.byteLength) {
+      var id = dv.getUint16(p), n = dv.getUint16(p + 2);
+      p += 4;
+      var pts = [], t = 0, lat = 0, lon = 0;
+      for (var i = 0; i < n; i++) {
+        if (dv.getUint8(p) & 0x80) {
+          t -= dv.getUint16(p) & 0x7fff;
+          lat += dv.getInt16(p + 2);
+          lon += dv.getInt16(p + 4);
+          p += 6 + (hasAlt ? 2 : 0) + (hasDtf ? 2 : 0) + (hasLap ? 1 : 0) + (hasPc ? 2 : 0);
+        } else {
+          t = base + dv.getUint32(p);
+          lat = dv.getInt32(p + 4);
+          lon = dv.getInt32(p + 8);
+          p += 12 + (hasAlt ? 2 : 0) + (hasDtf ? 4 : 0) + (hasLap ? 1 : 0) + (hasPc ? 4 : 0);
+        }
+        pts.push({ t: t, lat: lat / 1e5, lon: lon / 1e5 });
+      }
+      teams[id] = pts.reverse();
+    }
+    return teams;
+  }
+
+  function fetchWithTimeout(url, ms) {
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, ms);
+    return fetch(url, { signal: ctl.signal, cache: 'no-store' }).then(function (res) {
+      clearTimeout(timer);
+      if (!res.ok) throw new Error('HTTP ' + res.status + ' from ' + url);
+      return res;
+    }, function (err) { clearTimeout(timer); throw err; });
+  }
+
+  var rallyTeams = null;   // RaceSetup teams, fetched once
+  var rallyData = null;    // { fleet, chaos } from the last good refresh
+  var rallyUpdatedAt = null;
+
+  function fetchRally() {
+    var setup = rallyTeams ? Promise.resolve(rallyTeams) :
+      fetchWithTimeout(YB_URL + 'JSON/' + YB_RACE + '/RaceSetup', 30000)
+        .then(function (res) { return res.json(); })
+        .then(function (json) { return (rallyTeams = json.teams || []); });
+    var fleet = fetchWithTimeout(YB_URL + 'BIN/' + YB_RACE + '/AllPositions3', 60000)
+      .then(function (res) { return res.arrayBuffer(); })
+      .then(decodeYbPositions);
+    var chaos = fetchWithTimeout(CHAOS_TRACK_URL, 30000)
+      .then(function (res) { return res.json(); })
+      .then(function (json) {
+        var track = [];
+        (json.data || []).forEach(function (row) {
+          var t = Date.parse(row[0]) / 1000, v = row[1];   // v is [lon, lat]
+          if (v && v[0] != null && v[1] != null && !isNaN(t)) track.push({ t: t, lat: v[1], lon: v[0] });
+        });
+        if (!track.length) throw new Error('no Chaos position history');
+        return track;
+      });
+    Promise.all([setup, fleet, chaos])
+      .then(function (r) {
+        rallyData = { fleet: r[1], chaos: r[2] };
+        rallyUpdatedAt = new Date();
+        renderRally();
+      })
+      .catch(function (err) {
+        console.error('rally refresh failed', err);
+        el('rally-status').textContent = 'Refresh failed (' + (err && err.message || err) + ')' +
+          (rallyUpdatedAt ? ', showing ' + hhmm(rallyUpdatedAt) + ' data' : '') + '; retrying';
+      });
+  }
+
+  // DTF gained over the h hours before t: positive means closer to the finish.
+  function dtfGain(track, t, h, maxGap) {
+    var now = dtf(trackAt(track, t, maxGap));
+    var then = dtf(trackAt(track, t - h * 3600, maxGap));
+    return now == null || then == null ? null : then - now;
+  }
+
+  function computeRally() {
+    var chaos = rallyData.chaos;
+    var nowSec = Date.now() / 1000;
+    var rows = [], omitted = [], fleetFix = 0;
+    rallyTeams.forEach(function (team) {
+      var track = rallyData.fleet[team.id];
+      if (!track || !track.length || team.status !== 'RACING') return;
+      var fix = track[track.length - 1];
+      if (nowSec - fix.t > FLEET_MAX_AGE_SEC) { omitted.push(team.name); return; }
+      fleetFix = Math.max(fleetFix, fix.t);
+      var boatDtf = dtf(fix);
+      var chaosDtf = dtf(trackAt(chaos, fix.t, CHAOS_MAX_GAP_SEC));
+      var row = {
+        name: team.name, colour: '#' + (team.colour || '888888'), t: fix.t, dtf: boatDtf,
+        lead: chaosDtf == null ? null : boatDtf - chaosDtf,
+        run24: trackRun(track, fix.t - 86400, fix.t, FLEET_MAX_GAP_SEC)
+      };
+      [6, 24].forEach(function (h) {
+        var gain = dtfGain(track, fix.t, h, FLEET_MAX_GAP_SEC);
+        var chaosGain = dtfGain(chaos, fix.t, h, CHAOS_MAX_GAP_SEC);
+        row['gain' + h] = gain;
+        row['vs' + h] = gain == null || chaosGain == null ? null : chaosGain - gain;
+      });
+      rows.push(row);
+    });
+    // Chaos's own row is taken at the most recent fleet fix time.
+    if (fleetFix) {
+      rows.push({
+        chaos: true, name: 'Chaos', colour: ACCENT, t: fleetFix,
+        dtf: dtf(trackAt(chaos, fleetFix, CHAOS_MAX_GAP_SEC)),
+        run24: trackRun(chaos, fleetFix - 86400, fleetFix, CHAOS_MAX_GAP_SEC),
+        gain6: dtfGain(chaos, fleetFix, 6, CHAOS_MAX_GAP_SEC),
+        gain24: dtfGain(chaos, fleetFix, 24, CHAOS_MAX_GAP_SEC)
+      });
+    }
+    rows.sort(function (a, b) {
+      return (a.dtf == null ? Infinity : a.dtf) - (b.dtf == null ? Infinity : b.dtf);
+    });
+    return { rows: rows, omitted: omitted, fleetFix: fleetFix };
+  }
+
+  function fmtNm(v) { return v == null ? '—' : v.toFixed(1); }
+
+  // Signed and coloured: positive is good for Chaos.
+  function fmtVs(v) {
+    if (v == null) return '<span class="dim">—</span>';
+    var cls = v > 0.05 ? 'good' : v < -0.05 ? 'bad' : '';
+    return '<span class="' + cls + '">' + (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(1) + '</span>';
+  }
+
+  function fmtFix(t) {
+    var d = new Date(t * 1000);
+    var ageMin = Math.max(0, Math.round((Date.now() - d) / 60000));
+    var age = ageMin < 60 ? ageMin + 'm' : Math.floor(ageMin / 60) + 'h' + pad2(ageMin % 60);
+    return pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ' <span class="dim">' + age + ' ago</span>';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function renderRally() {
+    if (!rallyData || !rallyTeams) return;
+    var r = computeRally();
+    el('rally-rows').innerHTML = r.rows.map(function (row) {
+      return '<tr' + (row.chaos ? ' class="chaos"' : '') + '>' +
+        '<td><span class="swatch" style="background:' + escapeHtml(row.colour) + '"></span>' + escapeHtml(row.name) + '</td>' +
+        '<td>' + fmtFix(row.t) + '</td>' +
+        '<td>' + fmtNm(row.dtf) + '</td>' +
+        '<td>' + (row.chaos ? '' : fmtVs(row.lead)) + '</td>' +
+        '<td>' + fmtNm(row.run24) + '</td>' +
+        '<td>' + fmtNm(row.gain6) + '</td>' +
+        '<td>' + (row.chaos ? '' : fmtVs(row.vs6)) + '</td>' +
+        '<td>' + fmtNm(row.gain24) + '</td>' +
+        '<td>' + (row.chaos ? '' : fmtVs(row.vs24)) + '</td>' +
+        '</tr>';
+    }).join('');
+    el('rally-fleet-fix').textContent = r.fleetFix ? fmtFix(r.fleetFix).replace(/<[^>]+>/g, '') : '—';
+    el('rally-status').textContent = 'Updated ' + hhmm(rallyUpdatedAt);
+    el('rally-note').textContent = 'All distances in nm. Each boat is compared with Chaos’s position at the time of ' +
+      'that boat’s fix. Chaos lead and vs Chaos: positive means Chaos is ahead / gained more DTF. ' +
+      'Chaos row is at the latest fleet fix.' +
+      (r.omitted.length ? ' Not shown (no fix in 24 h): ' + r.omitted.join(', ') + '.' : '');
+  }
+
+  function updateRallyLive() {
+    if (position) {
+      el('rally-chaos-now').textContent =
+        fmtNm(dtf({ lat: position.latitude, lon: position.longitude })) + ' nm';
+    }
+  }
+
+  function startRally() {
+    el('rally-finish').textContent = formatLatLon(RALLY_FINISH.lat, 'N', 'S') + ' ' +
+      formatLatLon(RALLY_FINISH.lon, 'E', 'W');
+    fetchRally();
+    setInterval(fetchRally, RALLY_REFRESH_MS);
+  }
+
+  // ---- Page tabs ----
+  // Not persisted, like blackout: every load starts on the nav page.
+  var tabs = document.querySelectorAll('.tab');
+  Array.prototype.forEach.call(tabs, function (tab) {
+    tab.addEventListener('click', function () {
+      Array.prototype.forEach.call(tabs, function (t) { t.classList.toggle('active', t === tab); });
+      document.body.classList.toggle('page-rally', tab.dataset.page === 'rally');
+      if (tab.dataset.page === 'rally') renderRally();   // refresh the fix ages
+    });
+  });
+
   // ---- Blackout toggle ----
   // Not persisted on purpose: every load starts with the dashboard visible.
   function toggleBlackout() { document.body.classList.toggle('blackout'); }
@@ -756,6 +1099,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   // ---- Boot ----
   tickClock();
   backfillHistory(5000);
+  startRally();
   connect();
 })();
 </script>
