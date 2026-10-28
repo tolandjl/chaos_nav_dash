@@ -242,6 +242,9 @@ body.page-rally #page-rally { display: flex; }
 .rally-table .dim { color: var(--text-dim); font-size: 14px; }
 .rally-table .good { color: #4cd07d; }
 .rally-table .bad { color: #ff6b6b; }
+/* A fix older than the fleet's newest: that row's numbers are from earlier. */
+.rally-table td.stale { color: #ffb020; background: rgba(255, 176, 32, 0.12); }
+.rally-table td.stale .dim { color: #ffb020; }
 .rally-note { color: var(--text-dim); font-size: 12px; }
 </style>
 </head>
@@ -414,6 +417,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
 
   // ---- Top bar: clocks, position, sun and tides ----
   var position = null;   // { latitude, longitude } in degrees, from SignalK
+  var positionT = 0;     // its timestamp (s)
   var tideExtremes = []; // ascending [{ time: ms, level: ft, high: bool }]
 
   function el(id) { return document.getElementById(id); }
@@ -424,6 +428,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     if (pos.latitude == null || pos.longitude == null) return;
     var first = !position;
     position = pos;
+    positionT = tsMs / 1000;
     el('tb-pos').textContent = formatLatLon(pos.latitude, 'N', 'S') + ' ' +
       formatLatLon(pos.longitude, 'E', 'W');
     if (first) { updateSun(); fetchTides(); }
@@ -846,6 +851,13 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   var CHAOS_MAX_GAP_SEC = 30 * 60;     // Chaos history is every 5 min
   var FLEET_MAX_GAP_SEC = 9 * 3600;    // YB fixes are every 4 h; tolerate one missed fix
   var FLEET_MAX_AGE_SEC = 24 * 3600;   // older fixes can't be compared with the Chaos track
+  // Fixes in one fleet update differ by seconds to minutes; a fix this much
+  // older than the newest is from an earlier update, so it is flagged.
+  var FIX_STALE_SEC = 3600;
+  // YB can publish a fix within minutes, before SignalK history has a sample
+  // after it. The live position is appended to cover that; if it is missing,
+  // the last history sample stands in for up to this long.
+  var CHAOS_END_SLACK_SEC = 10 * 60;
   var EARTH_NM = 3440.065;
 
   // Waterline lengths (m) by model, as the YB tracker names them, from the
@@ -987,6 +999,12 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
 
   function computeRally() {
     var chaos = rallyData.chaos;
+    var last = chaos[chaos.length - 1];
+    if (position && positionT > last.t) {
+      chaos = chaos.concat([{ t: positionT, lat: position.latitude, lon: position.longitude }]);
+    } else if (Date.now() / 1000 - last.t <= CHAOS_END_SLACK_SEC) {
+      chaos = chaos.concat([{ t: last.t + CHAOS_END_SLACK_SEC, lat: last.lat, lon: last.lon }]);
+    }
     var nowSec = Date.now() / 1000;
     var rows = [], omitted = [], fleetFix = 0;
     rallyTeams.forEach(function (team) {
@@ -1103,7 +1121,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
           ' <span class="dim">' + escapeHtml(row.model || '') + '</span></td>' +
         '<td>' + (row.lwlFt == null ? '—' : row.lwlFt.toFixed(1) + ' ft') + '</td>' +
         '<td>' + (row.hs == null ? '—' : row.hs.toFixed(2) + ' kt') + '</td>' +
-        '<td>' + fmtFix(row.t) + '</td>' +
+        '<td' + (row.t < rallyFleetFix - FIX_STALE_SEC ? ' class="stale"' : '') + '>' + fmtFix(row.t) + '</td>' +
         '<td>' + fmtNm(row.dtf) + '</td>' +
         '<td>' + vs(row.lead) + '</td>' +
         '<td>' + fmtNm(row.gain6) + '</td>' +
@@ -1125,6 +1143,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   }
 
   var rallyRows = [];
+  var rallyFleetFix = 0;
 
   document.getElementById('rally-head-row').addEventListener('click', function (e) {
     var th = e.target.closest('th');
@@ -1138,6 +1157,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     if (!rallyData || !rallyTeams) return;
     var r = computeRally();
     rallyRows = r.rows;
+    rallyFleetFix = r.fleetFix;
     renderRallyRows(rallyRows);
     el('rally-fleet-fix').textContent = r.fleetFix ? fmtFix(r.fleetFix).replace(/<[^>]+>/g, '') : '—';
     el('rally-status').textContent = 'Updated ' + hhmm(rallyUpdatedAt);
@@ -1147,7 +1167,8 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
       'times what Chaos made good); vs hcp: actual vs Chaos minus hcp, positive means Chaos beat its handicap. ' +
       'Overtake: time from the fix until the trailing boat draws level at the 24 h vs Chaos rate; ' +
       'green is Chaos catching them, red is them catching Chaos, blank is the gap growing. ' +
-      'Chaos row is at the latest fleet fix. Click a column heading to sort.' +
+      'Chaos row is at the latest fleet fix; an amber fix time is older than that, and that row’s ' +
+      'numbers are from its own earlier fix. Click a column heading to sort.' +
       (r.omitted.length ? ' Not shown (no fix in 24 h): ' + r.omitted.join(', ') + '.' : '');
   }
 
