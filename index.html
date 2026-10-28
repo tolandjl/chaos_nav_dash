@@ -299,9 +299,9 @@ body.page-rally #page-rally { display: flex; }
           <tr id="rally-head-row">
             <th data-key="name">Boat</th><th data-key="lwlFt">LWL</th><th data-key="hs">Hull spd</th>
             <th data-key="t">Fix (UTC)</th><th data-key="dtf">DTF</th><th data-key="lead">Chaos lead</th>
-            <th data-key="run24">24h run</th>
             <th data-key="gain6">6h gain</th><th data-key="exp6">6h hcp</th><th data-key="vs6">6h vs Chaos</th><th data-key="hcp6">6h vs hcp</th>
             <th data-key="gain24">24h gain</th><th data-key="exp24">24h hcp</th><th data-key="vs24">24h vs Chaos</th><th data-key="hcp24">24h vs hcp</th>
+            <th data-key="overtake">Overtake</th>
           </tr>
         </thead>
         <tbody id="rally-rows"></tbody>
@@ -896,23 +896,6 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     return { t: t, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f };
   }
 
-  // Distance sailed along the track between t0 and t1, or null if the track
-  // doesn't cover the whole span.
-  function trackRun(track, t0, t1, maxGap) {
-    var prev = trackAt(track, t0, maxGap);
-    var end = trackAt(track, t1, maxGap);
-    if (!prev || !end) return null;
-    var run = 0;
-    for (var i = 0; i < track.length; i++) {
-      var p = track[i];
-      if (p.t <= t0) continue;
-      if (p.t >= t1) break;
-      run += distNm(prev, p);
-      prev = p;
-    }
-    return run + distNm(prev, end);
-  }
-
   // YB's AllPositions3 binary: a flags byte, a uint32 base time, then per team
   // a uint16 id, a uint16 point count and the points newest first. A point is
   // either absolute (uint32 time offset, int32 lat, int32 lon, in 1e-5 deg) or,
@@ -1019,8 +1002,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
       var row = {
         name: team.name, model: team.model, colour: '#' + (team.colour || '888888'),
         lwlFt: lwlFeet(lwl), hs: hs, t: fix.t, dtf: boatDtf,
-        lead: chaosDtf == null ? null : boatDtf - chaosDtf,
-        run24: trackRun(track, fix.t - 86400, fix.t, FLEET_MAX_GAP_SEC)
+        lead: chaosDtf == null ? null : boatDtf - chaosDtf
       };
       // Handicap: on hull speed alone, a boat should make good
       // (its hull speed / Chaos's) times what Chaos made good over the same
@@ -1036,6 +1018,14 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
         row['exp' + h] = exp;
         row['hcp' + h] = vs == null || exp == null ? null : vs - exp;
       });
+      // Days from this boat's fix until the trailing boat draws level, if the
+      // last 24 h's rate of change in the lead held. Null when the gap is
+      // growing (or not changing), so nobody overtakes. chaosPasses says who
+      // does the overtaking.
+      if (row.lead != null && row.vs24 != null && row.lead * row.vs24 < 0) {
+        row.overtake = Math.abs(row.lead / row.vs24);
+        row.chaosPasses = row.lead < 0;
+      }
       rows.push(row);
     });
     // Chaos's own row is taken at the most recent fleet fix time. It is par,
@@ -1046,7 +1036,6 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
         lwlFt: lwlFeet(CHAOS_LWL_M), hs: CHAOS_HULL_SPEED, t: fleetFix,
         dtf: dtf(trackAt(chaos, fleetFix, CHAOS_MAX_GAP_SEC)),
         lead: 0,
-        run24: trackRun(chaos, fleetFix - 86400, fleetFix, CHAOS_MAX_GAP_SEC),
         gain6: dtfGain(chaos, fleetFix, 6, CHAOS_MAX_GAP_SEC),
         gain24: dtfGain(chaos, fleetFix, 24, CHAOS_MAX_GAP_SEC),
         exp6: 0, vs6: 0, hcp6: 0, exp24: 0, vs24: 0, hcp24: 0
@@ -1097,6 +1086,15 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     return (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(1);
   }
 
+  // Green when Chaos is the one catching up, red when the other boat is.
+  function fmtOvertake(row) {
+    if (row.overtake == null) return '<span class="dim">—</span>';
+    var hours = Math.round(row.overtake * 24);
+    var text = hours >= 100 * 24 ? '>99d' :
+      hours < 24 ? hours + 'h' : Math.floor(hours / 24) + 'd ' + pad2(hours % 24) + 'h';
+    return '<span class="' + (row.chaosPasses ? 'good' : 'bad') + '">' + text + '</span>';
+  }
+
   function renderRallyRows(rows) {
     el('rally-rows').innerHTML = sortRows(rows).map(function (row) {
       var vs = function (v) { return row.chaos ? '' : fmtVs(v); };
@@ -1108,7 +1106,6 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
         '<td>' + fmtFix(row.t) + '</td>' +
         '<td>' + fmtNm(row.dtf) + '</td>' +
         '<td>' + vs(row.lead) + '</td>' +
-        '<td>' + fmtNm(row.run24) + '</td>' +
         '<td>' + fmtNm(row.gain6) + '</td>' +
         '<td>' + (row.chaos ? '' : fmtSigned(row.exp6)) + '</td>' +
         '<td>' + vs(row.vs6) + '</td>' +
@@ -1117,6 +1114,7 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
         '<td>' + (row.chaos ? '' : fmtSigned(row.exp24)) + '</td>' +
         '<td>' + vs(row.vs24) + '</td>' +
         '<td>' + vs(row.hcp24) + '</td>' +
+        '<td>' + (row.chaos ? '' : fmtOvertake(row)) + '</td>' +
         '</tr>';
     }).join('');
     Array.prototype.forEach.call(document.querySelectorAll('#rally-head-row th'), function (th) {
@@ -1147,6 +1145,8 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
       'that boat’s fix. Chaos lead and vs Chaos: positive means Chaos is ahead / gained more DTF. ' +
       'hcp: the vs Chaos result hull speed alone predicts (each boat makes good its hull speed ÷ Chaos’s ' +
       'times what Chaos made good); vs hcp: actual vs Chaos minus hcp, positive means Chaos beat its handicap. ' +
+      'Overtake: time from the fix until the trailing boat draws level at the 24 h vs Chaos rate; ' +
+      'green is Chaos catching them, red is them catching Chaos, blank is the gap growing. ' +
       'Chaos row is at the latest fleet fix. Click a column heading to sort.' +
       (r.omitted.length ? ' Not shown (no fix in 24 h): ' + r.omitted.join(', ') + '.' : '');
   }
