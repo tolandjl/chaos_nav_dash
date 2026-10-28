@@ -31,7 +31,6 @@ html, body {
   width: 100%;
   height: 100%;
   color: var(--text);
-  cursor: none;
   overflow: hidden;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
 }
@@ -176,7 +175,7 @@ body.blackout #blackout { display: block; }
   background: rgba(22, 24, 28, 0.6);
   color: var(--text-dim);
   opacity: 0.35;
-  cursor: none;
+  cursor: pointer;
 }
 /* Larger invisible touch target for gloved or wet fingers. */
 #blackout-toggle::after {
@@ -199,7 +198,7 @@ body.blackout #blackout-toggle { opacity: 0.25; }
   border: 1px solid var(--panel-border);
   background: transparent;
   color: var(--text-dim);
-  cursor: none;
+  cursor: pointer;
 }
 .tab.active { background: rgba(47, 143, 224, 0.22); border-color: rgba(47, 143, 224, 0.5); color: var(--text); }
 #page-rally {
@@ -217,7 +216,7 @@ body.page-rally #page-rally { display: flex; }
 .rally-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 17px;
+  font-size: 16px;
   font-variant-numeric: tabular-nums;
 }
 .rally-table th {
@@ -230,11 +229,14 @@ body.page-rally #page-rally { display: flex; }
   text-transform: uppercase;
   color: var(--text-dim);
   text-align: right;
-  padding: 6px 10px;
+  padding: 6px 8px;
+  cursor: pointer;
+  user-select: none;
 }
-.rally-table td { text-align: right; padding: 5px 10px; border-top: 1px solid rgba(255, 255, 255, 0.05); white-space: nowrap; }
+.rally-table th.sort-asc::after { content: ' \25B2'; color: var(--accent); }
+.rally-table th.sort-desc::after { content: ' \25BC'; color: var(--accent); }
+.rally-table td { text-align: right; padding: 5px 8px; border-top: 1px solid rgba(255, 255, 255, 0.05); white-space: nowrap; }
 .rally-table th:first-child, .rally-table td:first-child { text-align: left; }
-.rally-table th:nth-child(2), .rally-table td:nth-child(2) { text-align: left; }
 .rally-table .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
 .rally-table tr.chaos td { color: var(--accent); font-weight: 700; background: rgba(47, 143, 224, 0.10); }
 .rally-table .dim { color: var(--text-dim); font-size: 14px; }
@@ -294,9 +296,12 @@ body.page-rally #page-rally { display: flex; }
     <div class="rally-table-wrap">
       <table class="rally-table">
         <thead>
-          <tr>
-            <th>Boat</th><th>Fix (UTC)</th><th>DTF</th><th>Chaos lead</th><th>24h run</th>
-            <th>6h DTF gain</th><th>6h vs Chaos</th><th>24h DTF gain</th><th>24h vs Chaos</th>
+          <tr id="rally-head-row">
+            <th data-key="name">Boat</th><th data-key="lwlFt">LWL</th><th data-key="hs">Hull spd</th>
+            <th data-key="t">Fix (UTC)</th><th data-key="dtf">DTF</th><th data-key="lead">Chaos lead</th>
+            <th data-key="run24">24h run</th>
+            <th data-key="gain6">6h gain</th><th data-key="exp6">6h hcp</th><th data-key="vs6">6h vs Chaos</th><th data-key="hcp6">6h vs hcp</th>
+            <th data-key="gain24">24h gain</th><th data-key="exp24">24h hcp</th><th data-key="vs24">24h vs Chaos</th><th data-key="hcp24">24h vs hcp</th>
           </tr>
         </thead>
         <tbody id="rally-rows"></tbody>
@@ -843,6 +848,27 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
   var FLEET_MAX_AGE_SEC = 24 * 3600;   // older fixes can't be compared with the Chaos track
   var EARTH_NM = 3440.065;
 
+  // Waterline lengths (m) by model, as the YB tracker names them, from the
+  // builders' published specs. Hull speed (kt) = 1.34 * sqrt(LWL in ft) is the
+  // handicap, with Chaos as par.
+  var LWL_M = {
+    'Oyster 495': 14.27,
+    'Oyster 56': 14.50,   // sources split: 14.50 (47'7") vs 14.97 (49'1")
+    'Oyster 565': 15.93,
+    'Oyster 575': 15.72,
+    'Oyster 595': 16.81,
+    'Oyster 625': 17.23,
+    'Oyster 675': 18.31,  // older spec sheets give 18.16
+    'Oyster 725': 19.75,
+    'Oyster 82': 21.51
+  };
+  var CHAOS_MODEL = 'Swan 56';
+  var CHAOS_LWL_M = 15.08;
+
+  function lwlFeet(m) { return m == null ? null : m * 3.28084; }
+  function hullSpeed(m) { return m == null ? null : 1.34 * Math.sqrt(lwlFeet(m)); }
+  var CHAOS_HULL_SPEED = hullSpeed(CHAOS_LWL_M);
+
   function distNm(a, b) {
     var rad = Math.PI / 180;
     var dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
@@ -988,33 +1014,59 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
       fleetFix = Math.max(fleetFix, fix.t);
       var boatDtf = dtf(fix);
       var chaosDtf = dtf(trackAt(chaos, fix.t, CHAOS_MAX_GAP_SEC));
+      var lwl = LWL_M[team.model];
+      var hs = hullSpeed(lwl);
       var row = {
-        name: team.name, colour: '#' + (team.colour || '888888'), t: fix.t, dtf: boatDtf,
+        name: team.name, model: team.model, colour: '#' + (team.colour || '888888'),
+        lwlFt: lwlFeet(lwl), hs: hs, t: fix.t, dtf: boatDtf,
         lead: chaosDtf == null ? null : boatDtf - chaosDtf,
         run24: trackRun(track, fix.t - 86400, fix.t, FLEET_MAX_GAP_SEC)
       };
+      // Handicap: on hull speed alone, a boat should make good
+      // (its hull speed / Chaos's) times what Chaos made good over the same
+      // hours. hcp is what that predicts for "vs Chaos"; vs hcp is how the
+      // real result compares with it.
       [6, 24].forEach(function (h) {
         var gain = dtfGain(track, fix.t, h, FLEET_MAX_GAP_SEC);
         var chaosGain = dtfGain(chaos, fix.t, h, CHAOS_MAX_GAP_SEC);
+        var vs = gain == null || chaosGain == null ? null : chaosGain - gain;
+        var exp = hs == null || chaosGain == null ? null : chaosGain * (1 - hs / CHAOS_HULL_SPEED);
         row['gain' + h] = gain;
-        row['vs' + h] = gain == null || chaosGain == null ? null : chaosGain - gain;
+        row['vs' + h] = vs;
+        row['exp' + h] = exp;
+        row['hcp' + h] = vs == null || exp == null ? null : vs - exp;
       });
       rows.push(row);
     });
-    // Chaos's own row is taken at the most recent fleet fix time.
+    // Chaos's own row is taken at the most recent fleet fix time. It is par,
+    // so its comparison columns are blank but sort as zero.
     if (fleetFix) {
       rows.push({
-        chaos: true, name: 'Chaos', colour: ACCENT, t: fleetFix,
+        chaos: true, name: 'Chaos', model: CHAOS_MODEL, colour: ACCENT,
+        lwlFt: lwlFeet(CHAOS_LWL_M), hs: CHAOS_HULL_SPEED, t: fleetFix,
         dtf: dtf(trackAt(chaos, fleetFix, CHAOS_MAX_GAP_SEC)),
+        lead: 0,
         run24: trackRun(chaos, fleetFix - 86400, fleetFix, CHAOS_MAX_GAP_SEC),
         gain6: dtfGain(chaos, fleetFix, 6, CHAOS_MAX_GAP_SEC),
-        gain24: dtfGain(chaos, fleetFix, 24, CHAOS_MAX_GAP_SEC)
+        gain24: dtfGain(chaos, fleetFix, 24, CHAOS_MAX_GAP_SEC),
+        exp6: 0, vs6: 0, hcp6: 0, exp24: 0, vs24: 0, hcp24: 0
       });
     }
-    rows.sort(function (a, b) {
-      return (a.dtf == null ? Infinity : a.dtf) - (b.dtf == null ? Infinity : b.dtf);
-    });
     return { rows: rows, omitted: omitted, fleetFix: fleetFix };
+  }
+
+  // Column sort, set by clicking a header; clicking it again flips the
+  // direction. Blanks always sort last.
+  var rallySort = { key: 'dtf', dir: 1 };
+
+  function sortRows(rows) {
+    var key = rallySort.key, dir = rallySort.dir;
+    return rows.slice().sort(function (a, b) {
+      var x = a[key], y = b[key];
+      if (x == null || y == null) return (x == null) - (y == null);
+      if (typeof x === 'string') return dir * x.localeCompare(y);
+      return dir * (x - y);
+    });
   }
 
   function fmtNm(v) { return v == null ? '—' : v.toFixed(1); }
@@ -1039,27 +1091,63 @@ var uPlot=function(){"use strict";const l="u-off",e="u-label",t="width",n="heigh
     });
   }
 
+  // Signed but uncoloured: the handicap's prediction, not a result.
+  function fmtSigned(v) {
+    if (v == null) return '<span class="dim">—</span>';
+    return (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(1);
+  }
+
+  function renderRallyRows(rows) {
+    el('rally-rows').innerHTML = sortRows(rows).map(function (row) {
+      var vs = function (v) { return row.chaos ? '' : fmtVs(v); };
+      return '<tr' + (row.chaos ? ' class="chaos"' : '') + '>' +
+        '<td><span class="swatch" style="background:' + escapeHtml(row.colour) + '"></span>' + escapeHtml(row.name) +
+          ' <span class="dim">' + escapeHtml(row.model || '') + '</span></td>' +
+        '<td>' + (row.lwlFt == null ? '—' : row.lwlFt.toFixed(1) + ' ft') + '</td>' +
+        '<td>' + (row.hs == null ? '—' : row.hs.toFixed(2) + ' kt') + '</td>' +
+        '<td>' + fmtFix(row.t) + '</td>' +
+        '<td>' + fmtNm(row.dtf) + '</td>' +
+        '<td>' + vs(row.lead) + '</td>' +
+        '<td>' + fmtNm(row.run24) + '</td>' +
+        '<td>' + fmtNm(row.gain6) + '</td>' +
+        '<td>' + (row.chaos ? '' : fmtSigned(row.exp6)) + '</td>' +
+        '<td>' + vs(row.vs6) + '</td>' +
+        '<td>' + vs(row.hcp6) + '</td>' +
+        '<td>' + fmtNm(row.gain24) + '</td>' +
+        '<td>' + (row.chaos ? '' : fmtSigned(row.exp24)) + '</td>' +
+        '<td>' + vs(row.vs24) + '</td>' +
+        '<td>' + vs(row.hcp24) + '</td>' +
+        '</tr>';
+    }).join('');
+    Array.prototype.forEach.call(document.querySelectorAll('#rally-head-row th'), function (th) {
+      var on = th.dataset.key === rallySort.key;
+      th.classList.toggle('sort-asc', on && rallySort.dir > 0);
+      th.classList.toggle('sort-desc', on && rallySort.dir < 0);
+    });
+  }
+
+  var rallyRows = [];
+
+  document.getElementById('rally-head-row').addEventListener('click', function (e) {
+    var th = e.target.closest('th');
+    if (!th || !th.dataset.key) return;
+    rallySort = th.dataset.key === rallySort.key ?
+      { key: rallySort.key, dir: -rallySort.dir } : { key: th.dataset.key, dir: 1 };
+    renderRallyRows(rallyRows);
+  });
+
   function renderRally() {
     if (!rallyData || !rallyTeams) return;
     var r = computeRally();
-    el('rally-rows').innerHTML = r.rows.map(function (row) {
-      return '<tr' + (row.chaos ? ' class="chaos"' : '') + '>' +
-        '<td><span class="swatch" style="background:' + escapeHtml(row.colour) + '"></span>' + escapeHtml(row.name) + '</td>' +
-        '<td>' + fmtFix(row.t) + '</td>' +
-        '<td>' + fmtNm(row.dtf) + '</td>' +
-        '<td>' + (row.chaos ? '' : fmtVs(row.lead)) + '</td>' +
-        '<td>' + fmtNm(row.run24) + '</td>' +
-        '<td>' + fmtNm(row.gain6) + '</td>' +
-        '<td>' + (row.chaos ? '' : fmtVs(row.vs6)) + '</td>' +
-        '<td>' + fmtNm(row.gain24) + '</td>' +
-        '<td>' + (row.chaos ? '' : fmtVs(row.vs24)) + '</td>' +
-        '</tr>';
-    }).join('');
+    rallyRows = r.rows;
+    renderRallyRows(rallyRows);
     el('rally-fleet-fix').textContent = r.fleetFix ? fmtFix(r.fleetFix).replace(/<[^>]+>/g, '') : '—';
     el('rally-status').textContent = 'Updated ' + hhmm(rallyUpdatedAt);
     el('rally-note').textContent = 'All distances in nm. Each boat is compared with Chaos’s position at the time of ' +
       'that boat’s fix. Chaos lead and vs Chaos: positive means Chaos is ahead / gained more DTF. ' +
-      'Chaos row is at the latest fleet fix.' +
+      'hcp: the vs Chaos result hull speed alone predicts (each boat makes good its hull speed ÷ Chaos’s ' +
+      'times what Chaos made good); vs hcp: actual vs Chaos minus hcp, positive means Chaos beat its handicap. ' +
+      'Chaos row is at the latest fleet fix. Click a column heading to sort.' +
       (r.omitted.length ? ' Not shown (no fix in 24 h): ' + r.omitted.join(', ') + '.' : '');
   }
 
